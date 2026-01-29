@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Circle, useMap, Polyline } from 'react-leaflet';
-import { AlertTriangle, LogOut, UserPlus, Shield, MapPin, Bell, Navigation, Search } from 'lucide-react';
+import { AlertTriangle, LogOut, UserPlus, Shield, MapPin, Bell, Navigation, Search, Info } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import L from 'leaflet';
 import { getCurrentPosition, formatDistance, calculateDistance } from '../utils/location';
-import { updateLocation, getCrimeDensity, createEmergencyRequest, getActiveEmergencies, getDirections, getCoordinates } from '../utils/api';
+import { updateLocation, createEmergencyRequest, cancelEmergencyRequest, getActiveEmergencies, getDirections, getCoordinates, getCrimeIntensity } from '../utils/api';
 
 // Fix Leaflet default marker icon
 delete L.Icon.Default.prototype._getIconUrl;
@@ -27,13 +27,15 @@ function RecenterMap({ position }) {
 
 function Dashboard({ user, onLogout }) {
     const [userLocation, setUserLocation] = useState(null);
-    const [crimeData, setCrimeData] = useState(null);
+    const [currentCrime, setCurrentCrime] = useState(null); // { risk_level, color, intensity, crime_type }
+    const [lastCheckLocation, setLastCheckLocation] = useState(null);
     const [emergencyActive, setEmergencyActive] = useState(false);
     const [activeRequests, setActiveRequests] = useState([]);
     const [riskLevel, setRiskLevel] = useState('safe');
+    const [usingFallback, setUsingFallback] = useState(false);
 
     // Navigation states
-    const [destinationInput, setDestinationInput] = useState(''); // Default suggestion
+    const [destinationInput, setDestinationInput] = useState('Mannheim, Germany'); // Default suggestion
     const [routePath, setRoutePath] = useState(null);
     const [routeInstructions, setRouteInstructions] = useState([]);
     const [currentRouteIndex, setCurrentRouteIndex] = useState(0);
@@ -43,21 +45,56 @@ function Dashboard({ user, onLogout }) {
 
     const navigate = useNavigate();
 
+    // Check crime intensity if distance > 2km or initial
+    const checkCrimeIntensity = async (lat, lon) => {
+        try {
+            // If we have a last check location, calculate distance
+            if (lastCheckLocation) {
+                const dist = calculateDistance(lastCheckLocation[0], lastCheckLocation[1], lat, lon);
+                console.log(`Distance from last check: ${Math.round(dist)}m`);
+                if (dist < 3000) return; // Only check every 3km
+            }
+
+            console.log("Checking crime intensity for new location...", lat, lon);
+            const response = await getCrimeIntensity(lat, lon);
+            const data = response.data;
+
+            setCurrentCrime(data);
+            setRiskLevel(data.risk_level);
+            setLastCheckLocation([lat, lon]);
+
+        } catch (error) {
+            console.error("Error fetching crime intensity:", error);
+        }
+    };
+
     // Get initial location
     useEffect(() => {
         const getLocation = async () => {
             try {
                 const position = await getCurrentPosition();
                 setUserLocation([position.latitude, position.longitude]);
-
                 await updateLocation(position.latitude, position.longitude);
 
-                const crimeResponse = await getCrimeDensity(position.latitude, position.longitude);
-                setCrimeData(crimeResponse.data.crime_zones);
-                setRiskLevel(crimeResponse.data.current_risk_level);
+                // Initial crime check
+                await checkCrimeIntensity(position.latitude, position.longitude);
+
             } catch (error) {
                 console.error('Error getting location:', error);
-                setUserLocation([49.41461, 8.681495]); // Heidelberg fallback
+
+                let errorMessage = "Could not get your location.";
+                if (error.code === 1) { // PERMISSION_DENIED
+                    errorMessage = "Location permission denied. Please enable location services.";
+                } else if (window.isSecureContext === false) {
+                    errorMessage = "Location unavailable: Browser requires HTTPS for geolocation on network addresses.";
+                }
+
+                alert(`${errorMessage}\n\nUsing default location (Heidelberg) for demonstration.`);
+
+                const fallback = [49.41461, 8.681495]; // Heidelberg fallback
+                setUserLocation(fallback);
+                setUsingFallback(true);
+                checkCrimeIntensity(fallback[0], fallback[1]);
             }
         };
 
@@ -67,15 +104,14 @@ function Dashboard({ user, onLogout }) {
     // Regular location updates
     useEffect(() => {
         const interval = setInterval(async () => {
-            if (!isNavigating && userLocation) {
+            if (!isNavigating && userLocation && !usingFallback) {
                 try {
                     const position = await getCurrentPosition();
                     setUserLocation([position.latitude, position.longitude]);
                     await updateLocation(position.latitude, position.longitude);
 
-                    const crimeResponse = await getCrimeDensity(position.latitude, position.longitude);
-                    setCrimeData(crimeResponse.data.crime_zones);
-                    setRiskLevel(crimeResponse.data.current_risk_level);
+                    // Periodically check crime intensity if moved significantly (handled inside function)
+                    checkCrimeIntensity(position.latitude, position.longitude);
                 } catch (error) {
                     console.error('Error updating location:', error);
                 }
@@ -83,7 +119,7 @@ function Dashboard({ user, onLogout }) {
         }, 10000);
 
         return () => clearInterval(interval);
-    }, [isNavigating, userLocation]);
+    }, [isNavigating, userLocation, lastCheckLocation, usingFallback]);
 
     // Update instruction based on progress
     useEffect(() => {
@@ -132,16 +168,14 @@ function Dashboard({ user, onLogout }) {
 
                 await updateLocation(newPos[0], newPos[1]);
 
-                getCrimeDensity(newPos[0], newPos[1]).then(res => {
-                    setCrimeData(res.data.crime_zones);
-                    setRiskLevel(res.data.current_risk_level);
-                });
+                // Check crime intensity logic on movement
+                checkCrimeIntensity(newPos[0], newPos[1]);
             }
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isNavigating, routePath, currentRouteIndex, userLocation]);
+    }, [isNavigating, routePath, currentRouteIndex, userLocation, lastCheckLocation]);
 
     // Check for active emergencies
     useEffect(() => {
@@ -161,8 +195,18 @@ function Dashboard({ user, onLogout }) {
     }, []);
 
     const handleEmergencyRequest = async () => {
+        // If emergency is already active, this acts as a Cancel functionality
         if (emergencyActive) {
-            alert('You already have an active emergency request');
+            if (window.confirm("Are you sure you want to CANCEL the emergency alert?")) {
+                try {
+                    await cancelEmergencyRequest();
+                    setEmergencyActive(false);
+                    alert("Emergency alert cancelled.");
+                } catch (error) {
+                    console.error('Error cancelling emergency:', error);
+                    alert("Failed to cancel emergency.");
+                }
+            }
             return;
         }
 
@@ -220,15 +264,6 @@ function Dashboard({ user, onLogout }) {
         }
     };
 
-    const getRiskColor = (level) => {
-        switch (level) {
-            case 'high': return '#ef4444';
-            case 'medium': return '#f59e0b';
-            case 'low': return '#10b981';
-            default: return '#10b981';
-        }
-    };
-
     const getRiskText = (level) => {
         switch (level) {
             case 'high': return 'High Risk Area';
@@ -254,7 +289,7 @@ function Dashboard({ user, onLogout }) {
                     <div className="flex-1 max-w-xl mx-4">
                         <form onSubmit={handleRouteSearch} className="flex gap-2">
                             <div className="relative flex-1">
-                                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4 " />
+                                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                                 <input
                                     type="text"
                                     value={destinationInput}
@@ -325,21 +360,34 @@ function Dashboard({ user, onLogout }) {
                                 </Popup>
                             </Marker>
 
-                            {crimeData?.features?.map((feature, idx) => {
-                                const [lon, lat] = feature.geometry.coordinates;
-                                return (
-                                    <Circle
-                                        key={idx}
-                                        center={[lat, lon]}
-                                        radius={300}
-                                        pathOptions={{
-                                            color: feature.properties.color,
-                                            fillColor: feature.properties.color,
-                                            fillOpacity: 0.3
-                                        }}
-                                    />
-                                );
-                            })}
+                            {/* Dynamic Crime Circle */}
+                            {currentCrime && (
+                                <Circle
+                                    center={userLocation}
+                                    radius={500} // Radius for visual effect
+                                    pathOptions={{
+                                        color: currentCrime.color,
+                                        fillColor: currentCrime.color,
+                                        fillOpacity: 0.2
+                                    }}
+                                >
+                                    <Popup>
+                                        <div className="min-w-[200px]">
+                                            <div className="flex items-center gap-2 mb-2 border-b border-gray-200 pb-2">
+                                                <Info className="w-4 h-4" style={{ color: currentCrime.color }} />
+                                                <h3 className="font-bold" style={{ color: currentCrime.color }}>
+                                                    {currentCrime.intensity} Intensity
+                                                </h3>
+                                            </div>
+                                            <div className="space-y-1 text-sm">
+                                                <p><span className="font-semibold">Risk Level:</span> <span className="capitalize">{currentCrime.risk_level}</span></p>
+                                                <p><span className="font-semibold">Likely Crime:</span> {currentCrime.crime_type}</p>
+                                                <p className="text-xs text-gray-500 mt-2">AI Analysis by Gemini</p>
+                                            </div>
+                                        </div>
+                                    </Popup>
+                                </Circle>
+                            )}
                         </MapContainer>
                     ) : (
                         <div className="h-full flex items-center justify-center">
@@ -385,19 +433,24 @@ function Dashboard({ user, onLogout }) {
                     {/* Status & Alerts */}
                     <div className="space-y-4">
                         {/* Risk Status */}
-                        <div className={`glass-card p-4 border-l-4 ${riskLevel === 'high' ? 'border-danger-red' :
-                            riskLevel === 'medium' ? 'border-amber-warning' : 'border-emerald'
-                            }`}>
-                            <div className="flex items-center gap-3">
-                                <AlertTriangle className={`w-6 h-6 ${riskLevel === 'high' ? 'text-danger-red' :
-                                    riskLevel === 'medium' ? 'text-amber-warning' : 'text-emerald'
-                                    }`} />
-                                <div>
-                                    <h3 className="font-bold text-white">{getRiskText(riskLevel)}</h3>
-                                    <p className="text-xs text-gray-400">Current Zone Status</p>
+                        {currentCrime && (
+                            <div className={`glass-card p-4 border-l-4 ${currentCrime.risk_level === 'high' ? 'border-danger-red' :
+                                currentCrime.risk_level === 'medium' ? 'border-amber-warning' : 'border-emerald'
+                                }`}>
+                                <div className="flex items-center gap-3">
+                                    <AlertTriangle className={`w-6 h-6 ${currentCrime.risk_level === 'high' ? 'text-danger-red' :
+                                        currentCrime.risk_level === 'medium' ? 'text-amber-warning' : 'text-emerald'
+                                        }`} />
+                                    <div>
+                                        <h3 className="font-bold text-white capitalize">{currentCrime.intensity} Intensity</h3>
+                                        <p className="text-xs text-gray-400">AI Safety Analysis</p>
+                                    </div>
+                                </div>
+                                <div className="mt-2 pl-9">
+                                    <p className="text-sm text-gray-300">Most likely: {currentCrime.crime_type}</p>
                                 </div>
                             </div>
-                        </div>
+                        )}
 
                         {/* Emergencies */}
                         {emergencyActive && (
@@ -418,10 +471,19 @@ function Dashboard({ user, onLogout }) {
             <div className="fixed bottom-8 right-8 z-50">
                 <button
                     onClick={handleEmergencyRequest}
-                    disabled={emergencyActive}
-                    className={`btn-danger text-xl px-8 py-6 rounded-full shadow-glow-red transform transition-transform hover:scale-105 ${emergencyActive ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className={`text-xl px-8 py-6 rounded-full shadow-glow-red transform transition-transform hover:scale-105 ${emergencyActive
+                        ? 'bg-gray-800 text-white border-4 border-red-500 animate-pulse'
+                        : 'btn-danger'
+                        }`}
                 >
-                    <AlertTriangle className="w-8 h-8 inline" />
+                    {emergencyActive ? (
+                        <div className="flex flex-col items-center">
+                            <span className="text-xs font-bold uppercase mb-1 text-red-500">Cancel</span>
+                            <AlertTriangle className="w-8 h-8 text-red-500" />
+                        </div>
+                    ) : (
+                        <AlertTriangle className="w-8 h-8" />
+                    )}
                 </button>
             </div>
         </div>

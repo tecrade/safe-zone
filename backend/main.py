@@ -14,7 +14,7 @@ app = FastAPI(title="SafeZone API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173","http://10.201.105.30:5173","*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -245,6 +245,26 @@ def create_emergency_request(
         "nearest_volunteers": nearest_volunteers[:5]
     }
 
+@app.post("/api/emergency/cancel")
+def cancel_emergency_request(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Find active request for this user
+    active_request = db.query(EmergencyRequest).filter(
+        EmergencyRequest.requester_id == current_user.id,
+        EmergencyRequest.status.in_(["pending", "accepted"])
+    ).first()
+    
+    if not active_request:
+        raise HTTPException(status_code=404, detail="No active emergency request found")
+    
+    active_request.status = "cancelled"
+    active_request.resolved_at = datetime.utcnow()
+    db.commit()
+    
+    return {"message": "Emergency request cancelled successfully"}
+
 @app.post("/api/emergency/accept")
 def accept_emergency_request(
     request: EmergencyAccept,
@@ -372,6 +392,39 @@ def get_crime_density(
     return {
         "crime_zones": crime_data,
         "current_risk_level": risk_level
+    }
+
+from crime_data import get_crime_intensity_gemini
+
+@app.get("/api/crime/intensity")
+def get_crime_intensity_endpoint(
+    lat: float,
+    lon: float,
+    current_user: User = Depends(get_current_user)
+):
+    # Call Gemini to get intensity
+    crime_data = get_crime_intensity_gemini(lat, lon)
+    
+    # Map intensity to color and risk level for frontend
+    intensity_map = {
+        "High": {"color": "#ef4444", "risk": "high"},
+        "high": {"color": "#ef4444", "risk": "high"},
+        "Medium": {"color": "#f59e0b", "risk": "medium"},
+        "moderate": {"color": "#f59e0b", "risk": "medium"}, # Handle synonyms
+        "Moderate": {"color": "#f59e0b", "risk": "medium"},
+        "Low": {"color": "#10b981", "risk": "low"},
+        "low": {"color": "#10b981", "risk": "low"}
+    }
+    
+    mapped = intensity_map.get(crime_data.intensity, {"color": "#10b981", "risk": "low"})
+    
+    return {
+        "risk_level": mapped["risk"],
+        "color": mapped["color"],
+        "intensity": crime_data.intensity,
+        "crime_type": crime_data.crime_type,
+        "latitude": lat,
+        "longitude": lon
     }
 
 @app.get("/")

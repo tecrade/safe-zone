@@ -30,12 +30,14 @@ export const updateAvailability = (isAvailable) => api.put('/volunteer/availabil
 
 // Emergency
 export const createEmergencyRequest = () => api.post('/emergency/request');
+export const cancelEmergencyRequest = () => api.post('/emergency/cancel');
 export const acceptEmergencyRequest = (requestId) => api.post('/emergency/accept', { request_id: requestId });
 export const getActiveEmergencies = () => api.get('/emergency/active');
 export const getEmergencyStatus = (requestId) => api.get(`/emergency/status/${requestId}`);
 
 // Crime data
 export const getCrimeDensity = (lat, lon, radius = 2000) => api.get(`/crime/density?lat=${lat}&lon=${lon}&radius=${radius}`);
+export const getCrimeIntensity = (lat, lon) => api.get(`/crime/intensity?lat=${lat}&lon=${lon}`);
 
 // OpenRouteService API
 const ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6Ijc4ODdmY2YyZTA0MjQxNjY4ZmU2NGFiNDc2MTQ1ZGY5IiwiaCI6Im11cm11cjY0In0="; // Using key from prompt
