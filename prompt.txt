@@ -1,7 +1,36 @@
 --Project Title: SafeZone
 --Project Description: "This is web app for public safety and emergency response"
 --Project Idea: "Our project is a community-powered travel safety platform that combines real-time crime awareness with nearby human assistance. During signup, users provide basic details that are securely stored in the database, and with user consent, their location is continuously tracked to enable safety features. When a user feels unsafe and requests help, the system automatically identifies the nearest suitable users (based on location and availability) and sends them an alert. If a nearby user accepts the request, both parties receive each other’s live location so they can meet safely, and the requester is notified that help is on the way. In addition to this human support network, the web app also visualizes crime density around the user, highlighting the types of crimes with the highest occurrence in their surrounding area and providing proactive alerts when the user enters higher-risk zones, helping users make safer travel decisions before danger occurs."
---Frontend: React+jsx+tailwindcss+openstreetmap
+--Frontend: React+Vite+jsx+tailwindcss+openstreetmap
 --Backend: Fast Api
---database: sqllite
---Key requiremnets: The web should ask permission for user location , 
+--database: sqlite , the database should have user crednetial columns(name,email,password,location).
+--Key requiremnets: 
+-The web should ask permission for user location once loaded and update database with live location every 10sec interval.
+-There need a sperate section for user to register as volunteer which asks for their type of volunteer work like (Emergency Medical Responder
+Auxiliary Police Officer
+Crisis Intervention Specialist
+Medical Reserve Corps Volunteer
+Victim Advocate) and store that in database
+--Design theme : """Design a modern dark-themed UI for a public safety and emergency response web app inspired by futuristic SaaS dashboards. Use a deep navy and midnight blue background with glowing electric blue accents. The interface should feel trustworthy, calm, and professional. Include soft gradient lighting, glassmorphism-style cards, rounded corners, and subtle neon glows.
+
+The product features include:
+
+Crime density map with color-coded risk zones (red = danger, amber = warning, green = safe)
+
+Nearby trusted people ("Human Proxy" helpers like doctors, shopkeepers, security)
+
+Emergency request buttons
+
+Real-time alerts and safety notifications
+
+Use consistent colors: electric blue primary buttons, emerald green for safe status, amber for caution, red for danger.
+
+Typography should be clean and modern (like Inter or SF Pro).
+
+Use line icons (shield, map pin, alert triangle, user, verified badge).
+
+Overall visual style: futuristic civic-tech dashboard, premium SaaS landing page, dark UI, glowing highlights, minimal but powerful layout. """
+
+--frontend design: 
+-The UI should start with signup/login save data in the backend and then ask for user location permission and update database with live location every 10sec interval. 
+-After signup/login UI should display home screen consist of map with user location. 
