@@ -4,7 +4,7 @@ import { AlertTriangle, LogOut, UserPlus, Shield, MapPin, Bell, Navigation, Sear
 import { useNavigate } from 'react-router-dom';
 import L from 'leaflet';
 import { getCurrentPosition, formatDistance, calculateDistance } from '../utils/location';
-import { updateLocation, createEmergencyRequest, cancelEmergencyRequest, getActiveEmergencies, getDirections, getCoordinates, getCrimeIntensity } from '../utils/api';
+import { updateLocation, createEmergencyRequest, cancelEmergencyRequest, getActiveEmergencies, getDirections, getCoordinates, getCrimeIntensity, default as api } from '../utils/api';
 
 // Fix Leaflet default marker icon
 delete L.Icon.Default.prototype._getIconUrl;
@@ -177,25 +177,39 @@ function Dashboard({ user, onLogout }) {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isNavigating, routePath, currentRouteIndex, userLocation, lastCheckLocation]);
 
-    // Check for active emergencies
+    // Poll for emergency status updates
     useEffect(() => {
         const checkEmergencies = async () => {
             try {
                 const response = await getActiveEmergencies();
-                setActiveRequests(response.data.requests || []);
-                setEmergencyActive(response.data.requests?.length > 0);
+                const requests = response.data.requests || [];
+                setActiveRequests(requests);
+
+                // Victim logic
+                if (activeRequests.length === 0 && emergencyActive) {
+                    // Check if it was cancelled remotely or resolved
+                    // For now, we rely on local state for cancellation, but if backend says no request, sync it.
+                    // However, we want to keep "cancelled" message if we did it.
+                }
+
+                if (!emergencyActive && requests.length > 0 && !user?.is_volunteer) {
+                    // Check if this user is the requester of any active request
+                    const myRequest = requests.find(r => r.status === 'pending' || r.status === 'accepted');
+                    if (myRequest) setEmergencyActive(true);
+                }
+
             } catch (error) {
                 console.error('Error checking emergencies:', error);
             }
         };
 
+        const interval = setInterval(checkEmergencies, 5000); // 5 seconds poll
         checkEmergencies();
-        const interval = setInterval(checkEmergencies, 5000);
         return () => clearInterval(interval);
-    }, []);
+    }, [user, emergencyActive]);
+
 
     const handleEmergencyRequest = async () => {
-        // If emergency is already active, this acts as a Cancel functionality
         if (emergencyActive) {
             if (window.confirm("Are you sure you want to CANCEL the emergency alert?")) {
                 try {
@@ -213,10 +227,23 @@ function Dashboard({ user, onLogout }) {
         try {
             const response = await createEmergencyRequest();
             setEmergencyActive(true);
-            alert(`Emergency request sent! ${response.data.nearest_volunteers?.length || 0} volunteers nearby have been notified.`);
+            alert(`Emergency request sent to ${response.data.nearest_volunteers?.length || 0} active users nearby.`);
         } catch (error) {
             console.error('Error creating emergency request:', error);
             alert(error.response?.data?.detail || 'Failed to create emergency request');
+        }
+    };
+
+    const handleAcceptRequest = async (requestId) => {
+        try {
+            await api.post('/emergency/accept', { request_id: requestId });
+            alert("You have accepted the request. Proceed to the location!");
+            // Refresh requests immediately
+            const response = await getActiveEmergencies();
+            setActiveRequests(response.data.requests || []);
+        } catch (error) {
+            console.error("Error accepting request:", error);
+            alert("Failed to accept request.");
         }
     };
 
@@ -225,33 +252,27 @@ function Dashboard({ user, onLogout }) {
         if (!userLocation || !destinationInput) return;
 
         try {
-            // 1. Geocode the address
             let destLat, destLon;
 
-            // Check if input is coordinates (e.g. "8.68, 49.4")
             if (/^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$/.test(destinationInput)) {
                 const [lon, lat] = destinationInput.split(',').map(c => parseFloat(c.trim()));
                 destLon = lon;
                 destLat = lat;
             } else {
-                // Use Geoapify
                 const geoData = await getCoordinates(destinationInput);
                 if (geoData.features && geoData.features.length > 0) {
                     const coords = geoData.features[0].geometry.coordinates;
                     destLon = coords[0];
                     destLat = coords[1];
                 } else {
-                    alert('Location not found. Please try a different address.');
+                    alert('Location not found.');
                     return;
                 }
             }
 
-            // 2. Get directions
             const data = await getDirections(userLocation[0], userLocation[1], destLat, destLon);
-
-            const feature = data.features[0];
-            const coordinates = feature.geometry.coordinates;
-            const properties = feature.properties;
+            const coordinates = data.features[0].geometry.coordinates;
+            const properties = data.features[0].properties;
 
             setRoutePath(coordinates);
             setRouteInstructions(properties.segments[0].steps);
@@ -260,18 +281,17 @@ function Dashboard({ user, onLogout }) {
 
         } catch (error) {
             console.error("Routing error:", error);
-            alert("Failed to calculate route. Please check the address or try again.");
+            alert("Failed to calculate route.");
         }
     };
 
-    const getRiskText = (level) => {
-        switch (level) {
-            case 'high': return 'High Risk Area';
-            case 'medium': return 'Medium Risk Area';
-            case 'low': return 'Low Risk Area';
-            default: return 'Safe Area';
-        }
-    };
+    // Derived state for Modal
+    const incomingRequests = user?.is_volunteer ? activeRequests.filter(r => r.distance !== undefined) : [];
+    // For victim: check if my request is accepted
+    const myActiveRequest = !user?.is_volunteer && activeRequests.length > 0 ? activeRequests[0] : null;
+    const isAccepted = myActiveRequest?.status === 'accepted';
+    const responderLocation = isAccepted && myActiveRequest.responder_lat ? [myActiveRequest.responder_lat, myActiveRequest.responder_lon] : null;
+
 
     return (
         <div className="min-h-screen gradient-bg relative flex flex-col">
@@ -294,7 +314,7 @@ function Dashboard({ user, onLogout }) {
                                     type="text"
                                     value={destinationInput}
                                     onChange={(e) => setDestinationInput(e.target.value)}
-                                    placeholder="Enter address or place name..."
+                                    placeholder="Enter address..."
                                     className="input-field pl-10"
                                 />
                             </div>
@@ -306,7 +326,12 @@ function Dashboard({ user, onLogout }) {
                     </div>
 
                     <div className="flex gap-3">
-                        {!user?.is_volunteer && (
+                        {user?.is_volunteer ? (
+                            <div className="bg-emerald-500/20 text-emerald-400 px-4 py-2 rounded-lg flex items-center gap-2 border border-emerald-500/50">
+                                <Shield className="w-5 h-5" />
+                                <span className="font-bold">Volunteer Active</span>
+                            </div>
+                        ) : (
                             <button
                                 onClick={() => navigate('/volunteer-register')}
                                 className="btn-success flex items-center gap-2"
@@ -326,6 +351,38 @@ function Dashboard({ user, onLogout }) {
                 </div>
             </div>
 
+            {/* Volunteer Alert Modal */}
+            {incomingRequests.length > 0 && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <div className="glass-card p-8 max-w-md w-full mx-4 border-2 border-red-500 animate-pulse-slow shadow-[0_0_50px_rgba(239,68,68,0.5)]">
+                        <div className="flex flex-col items-center text-center">
+                            <div className="bg-red-500/20 p-4 rounded-full mb-4">
+                                <AlertTriangle className="w-16 h-16 text-red-500 animate-bounce" />
+                            </div>
+                            <h2 className="text-3xl font-bold text-white mb-2">EMERGENCY ALERT!</h2>
+                            <p className="text-gray-300 mb-6 text-lg">
+                                Victim is <span className="text-white font-bold">{incomingRequests[0].distance}m</span> away.
+                            </p>
+
+                            <div className="flex gap-4 w-full">
+                                <button
+                                    onClick={() => setActiveRequests([])} // Close locally for now
+                                    className="flex-1 py-3 rounded-xl bg-gray-700 hover:bg-gray-600 text-white font-bold transition-all"
+                                >
+                                    Close
+                                </button>
+                                <button
+                                    onClick={() => handleAcceptRequest(incomingRequests[0].request_id)}
+                                    className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold shadow-lg shadow-red-600/30 transition-all transform hover:scale-105"
+                                >
+                                    ACCEPT HELP
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Main Content Area */}
             <div className="flex-1 flex flex-col mx-4 mb-4 gap-4">
 
@@ -344,50 +401,45 @@ function Dashboard({ user, onLogout }) {
                             <RecenterMap position={userLocation} />
 
                             {routePath && (
-                                <Polyline
-                                    positions={routePath.map(coord => [coord[1], coord[0]])}
-                                    color="#00d4ff"
-                                    weight={6}
-                                    opacity={0.8}
-                                />
+                                <Polyline positions={routePath.map(coord => [coord[1], coord[0]])} color="#00d4ff" weight={6} opacity={0.8} />
                             )}
 
                             <Marker position={userLocation}>
-                                <Popup>
-                                    <div className="text-center">
-                                        <p className="font-semibold">Current Location</p>
-                                    </div>
-                                </Popup>
+                                <Popup>Current Location</Popup>
                             </Marker>
+
+                            {/* Responder Marker */}
+                            {responderLocation && (
+                                <Marker position={responderLocation} icon={new L.Icon({
+                                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png',
+                                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+                                    iconSize: [25, 41],
+                                    iconAnchor: [12, 41],
+                                    popupAnchor: [1, -34],
+                                    shadowSize: [41, 41]
+                                })}>
+                                    <Popup>
+                                        <div className="font-bold text-amber-500">Responder: {myActiveRequest.responder_name}</div>
+                                    </Popup>
+                                </Marker>
+                            )}
 
                             {/* Dynamic Crime Circle */}
                             {currentCrime && (
                                 <Circle
                                     center={userLocation}
-                                    radius={500} // Radius for visual effect
-                                    pathOptions={{
-                                        color: currentCrime.color,
-                                        fillColor: currentCrime.color,
-                                        fillOpacity: 0.2
-                                    }}
+                                    radius={500}
+                                    pathOptions={{ color: currentCrime.color, fillColor: currentCrime.color, fillOpacity: 0.2 }}
                                 >
                                     <Popup>
-                                        <div className="min-w-[200px]">
-                                            <div className="flex items-center gap-2 mb-2 border-b border-gray-200 pb-2">
-                                                <Info className="w-4 h-4" style={{ color: currentCrime.color }} />
-                                                <h3 className="font-bold" style={{ color: currentCrime.color }}>
-                                                    {currentCrime.intensity} Intensity
-                                                </h3>
-                                            </div>
-                                            <div className="space-y-1 text-sm">
-                                                <p><span className="font-semibold">Risk Level:</span> <span className="capitalize">{currentCrime.risk_level}</span></p>
-                                                <p><span className="font-semibold">Likely Crime:</span> {currentCrime.crime_type}</p>
-                                                <p className="text-xs text-gray-500 mt-2">AI Analysis by Gemini</p>
-                                            </div>
+                                        <div>
+                                            <h3 className="font-bold">{currentCrime.intensity} Intensity</h3>
+                                            <p>Risk: {currentCrime.risk_level}</p>
                                         </div>
                                     </Popup>
                                 </Circle>
                             )}
+
                         </MapContainer>
                     ) : (
                         <div className="h-full flex items-center justify-center">
@@ -398,7 +450,6 @@ function Dashboard({ user, onLogout }) {
 
                 {/* Bottom Panel: Instructions & Status */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-
                     {/* Navigation Instructions */}
                     <div className="md:col-span-2 glass-card p-6 flex flex-col justify-center min-h-[150px]">
                         {isNavigating ? (
@@ -414,57 +465,35 @@ function Dashboard({ user, onLogout }) {
                                             {nextInstructionText}
                                         </p>
                                     )}
-                                    <div className="mt-4 bg-navy-medium h-2 rounded-full overflow-hidden">
-                                        <div
-                                            className="bg-electric-blue h-full transition-all duration-500"
-                                            style={{ width: `${(currentRouteIndex / (routePath?.length || 1)) * 100}%` }}
-                                        />
-                                    </div>
                                 </div>
                             </div>
                         ) : (
                             <div className="text-center text-gray-400">
                                 <p className="text-lg">Enter a destination to start navigation</p>
-                                <p className="text-sm opacity-60">Use arrow keys to simulate movement in this demo</p>
                             </div>
                         )}
                     </div>
 
                     {/* Status & Alerts */}
                     <div className="space-y-4">
-                        {/* Risk Status */}
-                        {currentCrime && (
-                            <div className={`glass-card p-4 border-l-4 ${currentCrime.risk_level === 'high' ? 'border-danger-red' :
-                                currentCrime.risk_level === 'medium' ? 'border-amber-warning' : 'border-emerald'
-                                }`}>
-                                <div className="flex items-center gap-3">
-                                    <AlertTriangle className={`w-6 h-6 ${currentCrime.risk_level === 'high' ? 'text-danger-red' :
-                                        currentCrime.risk_level === 'medium' ? 'text-amber-warning' : 'text-emerald'
-                                        }`} />
-                                    <div>
-                                        <h3 className="font-bold text-white capitalize">{currentCrime.intensity} Intensity</h3>
-                                        <p className="text-xs text-gray-400">AI Safety Analysis</p>
-                                    </div>
-                                </div>
-                                <div className="mt-2 pl-9">
-                                    <p className="text-sm text-gray-300">Most likely: {currentCrime.crime_type}</p>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Emergencies */}
                         {emergencyActive && (
                             <div className="glass-card p-4 border-l-4 border-electric-blue">
                                 <div className="flex items-center gap-2 mb-2">
                                     <Bell className="w-5 h-5 text-electric-blue animate-bounce" />
-                                    <h3 className="font-bold text-white">Active Emergency</h3>
+                                    <h3 className="font-bold text-white">Emergency Active</h3>
                                 </div>
-                                <p className="text-sm text-gray-300">Responders notified. Stay safe.</p>
+                                {isAccepted ? (
+                                    <div className="text-emerald-400 font-bold">
+                                        Help Accepted by {myActiveRequest.responder_name}!
+                                        <p className="text-xs font-normal text-gray-300">Responder is en route.</p>
+                                    </div>
+                                ) : (
+                                    <p className="text-sm text-gray-300">Request sent. Waiting for nearest volunteer...</p>
+                                )}
                             </div>
                         )}
                     </div>
                 </div>
-
             </div>
 
             {/* Emergency Button */}

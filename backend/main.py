@@ -106,11 +106,21 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     
     access_token = create_access_token(data={"sub": user.email})
     
+    # Set user as active
+    user.is_active = True
+    db.commit()
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "user": UserResponse.from_orm(user)
     }
+
+@app.post("/api/logout")
+def logout(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    current_user.is_active = False
+    db.commit()
+    return {"message": "Logged out successfully"}
 
 # LOCATION ENDPOINTS
 @app.post("/api/location/update")
@@ -217,6 +227,7 @@ def create_emergency_request(
     volunteers = db.query(User).filter(
         User.is_volunteer == True,
         User.is_available == True,
+        User.is_active == True, # Only active users
         User.latitude.isnot(None),
         User.longitude.isnot(None),
         User.id != current_user.id
@@ -230,12 +241,14 @@ def create_emergency_request(
             volunteer.latitude,
             volunteer.longitude
         )
-        nearest_volunteers.append({
-            "id": volunteer.id,
-            "name": volunteer.name,
-            "volunteer_type": volunteer.volunteer_type,
-            "distance": round(distance)
-        })
+        # Filter for 1km radius
+        if distance <= 1000:
+            nearest_volunteers.append({
+                "id": volunteer.id,
+                "name": volunteer.name,
+                "volunteer_type": volunteer.volunteer_type,
+                "distance": round(distance)
+            })
     
     nearest_volunteers.sort(key=lambda x: x['distance'])
     

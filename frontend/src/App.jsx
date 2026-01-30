@@ -63,7 +63,7 @@ function App() {
           path="/volunteer-register"
           element={
             isAuthenticated ?
-              <VolunteerRegister user={user} /> :
+              <VolunteerRegister user={user} onUpdateUser={handleLogin} /> :
               <Navigate to="/login" />
           }
         />

@@ -11,7 +11,7 @@ const volunteerTypes = [
     'Victim Advocate'
 ];
 
-function VolunteerRegister({ user }) {
+function VolunteerRegister({ user, onUpdateUser }) {
     const [selectedType, setSelectedType] = useState('');
     const [loading, setLoading] = useState(false);
     const [success, setSuccess] = useState(false);
@@ -27,6 +27,15 @@ function VolunteerRegister({ user }) {
         setLoading(true);
         try {
             await registerVolunteer(selectedType);
+
+            // Update local user state
+            const updatedUser = { ...user, is_volunteer: true, volunteer_type: selectedType };
+            // Ensure we keep the token
+            const token = localStorage.getItem('token');
+            if (onUpdateUser) {
+                onUpdateUser(token, updatedUser);
+            }
+
             setSuccess(true);
             setTimeout(() => {
                 navigate('/dashboard');
@@ -91,15 +100,15 @@ function VolunteerRegister({ user }) {
                                 key={type}
                                 onClick={() => setSelectedType(type)}
                                 className={`glass-card p-4 cursor-pointer transition-all ${selectedType === type
-                                        ? 'border-electric-blue shadow-glow-blue'
-                                        : 'border-transparent hover:border-neon-blue/50'
+                                    ? 'border-electric-blue shadow-glow-blue'
+                                    : 'border-transparent hover:border-neon-blue/50'
                                     }`}
                             >
                                 <div className="flex items-center">
                                     <div
                                         className={`w-5 h-5 rounded-full border-2 mr-3 flex items-center justify-center ${selectedType === type
-                                                ? 'border-electric-blue bg-electric-blue'
-                                                : 'border-gray-400'
+                                            ? 'border-electric-blue bg-electric-blue'
+                                            : 'border-gray-400'
                                             }`}
                                     >
                                         {selectedType === type && (

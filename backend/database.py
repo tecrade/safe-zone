@@ -25,6 +25,7 @@ class User(Base):
     is_volunteer = Column(Boolean, default=False)
     volunteer_type = Column(String, nullable=True)
     is_available = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=False) # Tracks if user is currently logged in/online
     created_at = Column(DateTime, default=datetime.utcnow)
 
     emergency_requests_made = relationship("EmergencyRequest", foreign_keys="EmergencyRequest.requester_id", back_populates="requester")
